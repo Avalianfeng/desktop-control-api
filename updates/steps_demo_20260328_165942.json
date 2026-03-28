@@ -1,0 +1,15 @@
+[
+  {
+    "action": "widgets_read",
+    "request": {
+      "max_depth": 8,
+      "include_text_widgets": true,
+      "collapse_icons": true
+    },
+    "result": {
+      "http_status": 200,
+      "elapsed_ms": 102,
+      "widgets_count": null
+    }
+  }
+]

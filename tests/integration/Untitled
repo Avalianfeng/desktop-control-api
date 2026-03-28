@@ -1,0 +1,4 @@
+curl -X POST "http://127.0.0.1:8765/ui/dom/read" \
+  -H "X-API-Key: desktop-control-key" \
+  -H "Content-Type: application/json" \
+  -d '{"max_depth": 8, "include_offscreen": false}'
