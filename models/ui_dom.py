@@ -4,6 +4,7 @@ from typing import Dict, List, Literal, Optional
 
 from pydantic import BaseModel, Field
 
+from settings import default_ui_max_depth
 
 ElementSource = Literal["uia", "vision"]
 ElementStatus = Literal["ok", "degraded", "inferred", "error"]
@@ -37,7 +38,12 @@ class UIElement(BaseModel):
 
 
 class UIReadOptions(BaseModel):
-    max_depth: int = Field(default=8, ge=1, le=30)
+    max_depth: int = Field(
+        default_factory=default_ui_max_depth,
+        ge=1,
+        le=30,
+        description="UI 树最大深度；默认来自环境变量 DESKTOP_UI_MAX_DEPTH（未设则为 8）",
+    )
     include_offscreen: bool = False
     include_disabled: bool = True
     include_invisible: bool = False

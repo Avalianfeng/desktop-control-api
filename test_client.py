@@ -10,6 +10,8 @@ Desktop Control API 测试客户端（交互式 / 半自动）
 
     ``python test_client.py``
 
+    可在项目根 ``.env`` 中设置 ``DESKTOP_API_BASE``、``DESKTOP_API_KEY``、``DESKTOP_HTTP_TIMEOUT_S`` 等。
+
     部分子命令（如 ``--acceptance``）为只读验收；危险操作需显式确认或开关。
 """
 
@@ -24,11 +26,14 @@ from datetime import datetime
 from typing import Any, Dict, Optional, Tuple, List
 
 import base64
+import env_bootstrap  # noqa: F401
 import requests
 
-DEFAULT_API_BASE = os.getenv("DESKTOP_API_BASE", "http://127.0.0.1:8765")
-DEFAULT_API_KEY = os.getenv("DESKTOP_API_KEY", "desktop-control-key")
-DEFAULT_TIMEOUT_S = float(os.getenv("DESKTOP_HTTP_TIMEOUT_S", "20"))
+from settings import tooling_api_base, tooling_api_key, tooling_http_timeout_s
+
+DEFAULT_API_BASE = tooling_api_base()
+DEFAULT_API_KEY = tooling_api_key()
+DEFAULT_TIMEOUT_S = tooling_http_timeout_s(20.0)
 
 _SESSION = requests.Session()
 # 避免被本机 HTTP(S)_PROXY 环境变量劫持到代理端口（常见：7890）
@@ -218,13 +223,13 @@ def acceptance_suite(cfg: ClientConfig) -> str:
     has_legacy_meta = isinstance(meta, dict) and ("legacy_index_id" in meta) and ("locator_source" in meta)
     has_parent_field = isinstance(first, dict) and ("parent_id" in first)
 
-    ok = resp.status_code in (200, 206) and schema == "desktop_widgets.v1.2"
+    ok = resp.status_code in (200, 206) and schema == "desktop_widgets.v2"
     checks.append(
         CheckResult(
             name="读取可操作控件列表（widgets）",
             ok=ok,
             endpoint="POST /ui/widgets/read",
-            expected="HTTP 200/206 且 schema=desktop_widgets.v1.2",
+            expected="HTTP 200/206 且 schema=desktop_widgets.v2",
             actual=(
                 f"HTTP {resp.status_code}; schema={schema!r}; "
                 f"widgets={stats.get('widgets')!r}; actionable={stats.get('actionable_widgets')!r}; "
@@ -241,13 +246,13 @@ def acceptance_suite(cfg: ClientConfig) -> str:
     schema = data.get("schema_version")
     stats = data.get("stats") or {}
     returned = stats.get("returned")
-    ok = resp.status_code in (200, 206) and schema == "desktop_widgets_query.v1" and isinstance(data.get("widgets"), list)
+    ok = resp.status_code in (200, 206) and schema == "desktop_widgets_query.v2" and isinstance(data.get("widgets"), list)
     checks.append(
         CheckResult(
             name="按条件查询控件（widgets query）",
             ok=ok,
             endpoint="POST /ui/widgets/query",
-            expected="HTTP 200/206 且 schema=desktop_widgets_query.v1",
+            expected="HTTP 200/206 且 schema=desktop_widgets_query.v2",
             actual=f"HTTP {resp.status_code}; schema={schema!r}; returned={returned!r}",
             elapsed_ms=ms,
             notes="用于从控件列表中筛选出“最可能要点的那个”",
@@ -268,7 +273,7 @@ def acceptance_suite(cfg: ClientConfig) -> str:
     schema = data.get("schema_version")
     stats = data.get("stats") or {}
     returned = stats.get("returned")
-    ok = resp.status_code in (200, 206) and schema == "desktop_widgets_query.v1"
+    ok = resp.status_code in (200, 206) and schema == "desktop_widgets_query.v2"
     checks.append(
         CheckResult(
             name="层级过滤（ancestor_role）+ parent_id 输出",

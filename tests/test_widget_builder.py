@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from models.ui_dom import DesktopDOMData, UIBounds, UIElement
 from semantic.widget_builder import build_widgets, collapse_tree
+from semantic.widget_types import WidgetText
 
 
 def test_collapse_button_text_child_into_label() -> None:
@@ -50,5 +51,6 @@ def test_build_widgets_returns_button_widget_with_label() -> None:
     assert len(widgets) == 1
     assert widgets[0].type == "button"
     assert widgets[0].role == "button"
-    assert widgets[0].text == "."
+    assert widgets[0].text == WidgetText(value=".", source="uia", confidence=1.0)
+    assert widgets[0].text_legacy == "."
 

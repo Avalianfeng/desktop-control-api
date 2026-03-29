@@ -144,13 +144,20 @@ class WindowsController:
         windows = gw.getWindowsWithTitle(title)
         return windows[0] if windows else None
     
-    def focus(self, title: str, title_match_index: int = 0) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    def focus(
+        self,
+        title: str,
+        title_match_index: int = 0,
+        *,
+        policy: str = "strict",
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         聚焦/激活窗口（按标题子串匹配，见 pygetwindow.getWindowsWithTitle）。
 
         Args:
             title: 标题子串（大小写不敏感）
             title_match_index: 多个匹配窗口时的下标（0 起）；默认第一个
+            policy: \"strict\" 须真前台；\"relaxed\" 可见未前台也可视为成功（见 win32_win.force_foreground）
 
         Returns:
             (window_dict, None) 成功；(None, \"not_found\") / (None, \"focus_failed\")
@@ -163,24 +170,35 @@ class WindowsController:
         window = matches[title_match_index]
         wh = int(getattr(window, "_hWnd", 0) or 0)
         try:
-            fg = force_foreground(wh)
+            fg = force_foreground(wh, policy=policy)
             if not fg.get("ok"):
                 return None, "focus_failed"
             window.activate()
-            return {
+            win_out: Dict[str, Any] = {
                 "hwnd": wh,
                 "title": window.title,
                 "left": window.left,
                 "top": window.top,
                 "width": window.width,
                 "height": window.height,
-            }, None
+            }
+            if "foreground_verified" in fg:
+                win_out["foreground_verified"] = bool(fg["foreground_verified"])
+            return win_out, None
         except Exception:
             return None, "focus_failed"
 
-    def focus_by_hwnd(self, hwnd: int) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
+    def focus_by_hwnd(
+        self,
+        hwnd: int,
+        *,
+        policy: str = "strict",
+    ) -> Tuple[Optional[Dict[str, Any]], Optional[str]]:
         """
         按 hwnd 聚焦窗口（避免同名 title 歧义）。
+
+        Args:
+            policy: \"strict\" 须真前台；\"relaxed\" 可见未前台也可视为成功。
 
         Returns:
             (window_dict, None) 成功；(None, \"not_found\") / (None, \"focus_failed\")
@@ -197,21 +215,24 @@ class WindowsController:
                 wh = int(getattr(w, "_hWnd", 0) or 0)
                 if wh != hwnd_i:
                     continue
-                fg = force_foreground(wh)
+                fg = force_foreground(wh, policy=policy)
                 if not fg.get("ok"):
                     return None, "focus_failed"
                 try:
                     w.activate()
                 except Exception:
                     return None, "focus_failed"
-                return {
+                win_out = {
                     "hwnd": wh,
                     "title": w.title,
                     "left": w.left,
                     "top": w.top,
                     "width": w.width,
                     "height": w.height,
-                }, None
+                }
+                if "foreground_verified" in fg:
+                    win_out["foreground_verified"] = bool(fg["foreground_verified"])
+                return win_out, None
             except Exception:
                 continue
         return None, "not_found"

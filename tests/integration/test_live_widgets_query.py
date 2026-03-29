@@ -12,7 +12,7 @@ def test_live_ui_widgets_query_basic(integration_base_url: str, integration_head
     )
     assert resp.status_code in (200, 206)
     data = resp.json()
-    assert data["schema_version"] == "desktop_widgets_query.v1"
+    assert data["schema_version"] == "desktop_widgets_query.v2"
     assert "stats" in data and "widgets" in data
     assert data["stats"]["returned"] <= 10
 

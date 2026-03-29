@@ -51,7 +51,7 @@ def test_widgets_query_filters_and_select(monkeypatch) -> None:
     assert resp.status_code == 200
     data = resp.json()
     payload = data["data"]
-    assert payload["schema_version"] == "desktop_widgets_query.v1"
+    assert payload["schema_version"] == "desktop_widgets_query.v2"
     assert payload["stats"]["matched"] == 1
     assert payload["widgets"][0]["normalized"] == "equals"
     assert payload["widgets"][0]["role"] == "button"

@@ -1,5 +1,12 @@
 from __future__ import annotations
 
+import os
+
+# 单元测试需注册 /ocr/read_window、/locate/* 等诊断端点（与生产默认关闭不冲突）
+os.environ.setdefault("DESKTOP_EXPOSE_DEBUG_ROUTES", "1")
+
+import env_bootstrap  # noqa: F401 — pytest 收集前加载项目根 .env
+
 from dataclasses import dataclass
 from typing import Any, Dict
 

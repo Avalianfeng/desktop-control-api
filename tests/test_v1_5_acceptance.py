@@ -47,6 +47,32 @@ def test_windows_controller_focus_by_hwnd_ignores_same_title(monkeypatch) -> Non
     assert w2.activated is True
 
 
+def test_windows_controller_focus_by_hwnd_forwards_policy_kwarg(monkeypatch) -> None:
+    class _W:
+        def __init__(self, hwnd: int):
+            self._hWnd = hwnd
+            self.title = "T"
+            self.left = self.top = self.width = self.height = 1
+
+        def activate(self):
+            pass
+
+    w = _W(303)
+    captured: dict[str, Any] = {}
+
+    def _fake_fg(hwnd: int, **kw: Any):
+        captured.update(kw)
+        return {"ok": True, "reason": "test", "foreground_hwnd": hwnd, "foreground_verified": True}
+
+    monkeypatch.setattr(windows_module.gw, "getAllWindows", lambda: [w])
+    monkeypatch.setattr(windows_module, "force_foreground", _fake_fg)
+
+    ctrl = WindowsController()
+    out, err = ctrl.focus_by_hwnd(303, policy="relaxed")
+    assert err is None and out and out.get("foreground_verified") is True
+    assert captured.get("policy") == "relaxed"
+
+
 def test_keyboard_type_focus_switches_to_target_hwnd_and_traces(monkeypatch) -> None:
     calls: dict[str, Any] = {"focused": [], "typed": []}
 

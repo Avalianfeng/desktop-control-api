@@ -11,6 +11,8 @@ Desktop DOM 读取验证脚本（调用服务端 /ui/dom/read）
 
     ``python test_ui_dom_reader.py --help``
 
+    可在项目根 ``.env`` 中设置 ``DESKTOP_API_BASE``、``DESKTOP_API_KEY``（与 ``settings.tooling_*`` 一致）。
+
 支持：
 - 列出窗口并交互选择，或指定活动窗口 / 标题
 - 可配置解析深度与其它 UIReadOptions
@@ -21,13 +23,16 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Set
 
+import env_bootstrap  # noqa: F401
 import requests
 
+from settings import default_ui_max_depth, tooling_api_base, tooling_api_key
 
-DEFAULT_API_BASE = "http://127.0.0.1:8765"
-DEFAULT_API_KEY = "desktop-control-key"
+DEFAULT_API_BASE = tooling_api_base()
+DEFAULT_API_KEY = tooling_api_key()
 MAX_DEPTH_LIMIT = (1, 30)
 MAX_PRINT_ELEMENTS = 30
 
@@ -69,12 +74,25 @@ def api_headers(api_key: str) -> Dict[str, str]:
     return {"X-API-Key": api_key, "Content-Type": "application/json"}
 
 
+def unwrap_envelope(body: Dict[str, Any]) -> Dict[str, Any]:
+    """
+    服务端统一信封：{"success": bool, "data": ...}。
+    若为信封且 success，返回内层 data（dict）；否则返回原 body（兼容旧客户端直连）。
+    """
+    if not isinstance(body, dict):
+        return {}
+    if body.get("success") is True and isinstance(body.get("data"), dict):
+        return body["data"]
+    return body
+
+
 def fetch_windows(base: str, api_key: str, timeout: float) -> List[Dict[str, Any]]:
     resp = requests.get(f"{base.rstrip('/')}/windows", headers=api_headers(api_key), timeout=timeout)
     resp.raise_for_status()
-    data = resp.json()
-    if not data.get("success"):
-        raise RuntimeError(f"获取窗口列表失败：{data}")
+    envelope = resp.json()
+    if not isinstance(envelope, dict) or envelope.get("success") is not True:
+        raise RuntimeError(f"获取窗口列表失败：{envelope}")
+    data = unwrap_envelope(envelope)
     return list(data.get("windows") or [])
 
 
@@ -105,28 +123,44 @@ def prompt_int(message: str, default: int, min_v: int, max_v: int) -> int:
     return v
 
 
-def interactive_pick_window(windows: List[Dict[str, Any]]) -> Optional[str]:
-    """返回 window_title；None 表示活动窗口。"""
+@dataclass
+class WindowPickResult:
+    """窗口选择结果：标题匹配与 hwnd 二选一（API 优先 hwnd）。"""
+
+    window_title: Optional[str]
+    window_hwnd: Optional[int]
+
+
+def interactive_pick_window(windows: List[Dict[str, Any]]) -> WindowPickResult:
+    """返回标题或 hwnd；二者皆空表示活动窗口。"""
     print("\n可选窗口（输入序号选择；0 = 当前活动窗口，不按标题匹配）：")
     print_window_list(windows, max_rows=40)
     raw = input("序号 [0]: ").strip()
     if not raw:
-        return None
+        return WindowPickResult(None, None)
     try:
         idx = int(raw, 10)
     except ValueError:
         print("无效序号，使用活动窗口", file=sys.stderr)
-        return None
+        return WindowPickResult(None, None)
     if idx == 0:
-        return None
+        return WindowPickResult(None, None)
     if idx < 1 or idx > len(windows):
         print("序号超出范围，使用活动窗口", file=sys.stderr)
-        return None
-    title = windows[idx - 1].get("title") or ""
-    if not title.strip():
-        print("所选窗口无标题，改用活动窗口", file=sys.stderr)
-        return None
-    return title
+        return WindowPickResult(None, None)
+    row = windows[idx - 1]
+    hwnd = row.get("hwnd")
+    try:
+        hwnd_i = int(hwnd) if hwnd is not None else 0
+    except (TypeError, ValueError):
+        hwnd_i = 0
+    title = (row.get("title") or "").strip()
+    if hwnd_i > 0:
+        return WindowPickResult(title or None, hwnd_i)
+    if title:
+        return WindowPickResult(title, None)
+    print("所选窗口无标题且无 hwnd，改用活动窗口", file=sys.stderr)
+    return WindowPickResult(None, None)
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -170,6 +204,13 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--json-out", type=str, default=None, help="将完整 JSON 响应写入文件")
     p.add_argument("--list-only", action="store_true", help="仅列出窗口后退出")
     p.add_argument("--skip-validation", action="store_true", help="跳过结构断言（仅调试用）")
+    p.add_argument(
+        "--window-hwnd",
+        type=int,
+        default=None,
+        metavar="HWND",
+        help="按窗口句柄读取（与 API 一致，优先于标题；无需交互选窗）",
+    )
     return p
 
 
@@ -190,15 +231,19 @@ def main() -> None:
         return
 
     window_title: Optional[str]
+    window_hwnd: Optional[int] = args.window_hwnd
     if args.active:
         window_title = None
     elif args.window_title is not None:
         window_title = args.window_title.strip() or None
     else:
-        window_title = interactive_pick_window(windows)
+        pick = interactive_pick_window(windows)
+        window_title = pick.window_title
+        if window_hwnd is None and pick.window_hwnd is not None:
+            window_hwnd = pick.window_hwnd
 
     if args.max_depth is None:
-        max_depth = prompt_int("max_depth", 8, MAX_DEPTH_LIMIT[0], MAX_DEPTH_LIMIT[1])
+        max_depth = prompt_int("max_depth", default_ui_max_depth(), MAX_DEPTH_LIMIT[0], MAX_DEPTH_LIMIT[1])
     else:
         max_depth = args.max_depth
         if max_depth < MAX_DEPTH_LIMIT[0] or max_depth > MAX_DEPTH_LIMIT[1]:
@@ -215,9 +260,14 @@ def main() -> None:
     }
     if window_title is not None:
         body["window_title"] = window_title
+    if window_hwnd is not None:
+        body["window_hwnd"] = int(window_hwnd)
 
     print("\n请求参数:", json.dumps(body, ensure_ascii=False))
-    label = window_title if window_title else "<活动窗口>"
+    if window_hwnd is not None:
+        label = f"hwnd={window_hwnd}" + (f" ({window_title})" if window_title else "")
+    else:
+        label = window_title if window_title else "<活动窗口>"
     print(f"目标: {label} | max_depth={max_depth}\n")
 
     try:
@@ -238,19 +288,29 @@ def main() -> None:
         print(resp.text[:500])
         sys.exit(1)
 
-    if args.json_out:
-        with open(args.json_out, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        print(f"已写入: {args.json_out}")
-
     if resp.status_code not in (200, 206):
         print(json.dumps(data, ensure_ascii=False, indent=2))
         sys.exit(1)
 
-    if data.get("schema_version") != "desktop_dom.v1":
-        print(f"schema_version 不匹配：{data.get('schema_version')!r}", file=sys.stderr)
+    if data.get("success") is False:
+        print(json.dumps(data, ensure_ascii=False, indent=2), file=sys.stderr)
+        sys.exit(1)
+
+    payload = unwrap_envelope(data)
+    if not payload:
+        print("响应无有效 data 载荷", file=sys.stderr)
+        print(json.dumps(data, ensure_ascii=False, indent=2))
         sys.exit(2)
-    root = data.get("dom", {}).get("root")
+
+    if payload.get("schema_version") != "desktop_dom.v1":
+        print(f"schema_version 不匹配：{payload.get('schema_version')!r}", file=sys.stderr)
+        sys.exit(2)
+
+    if args.json_out:
+        with open(args.json_out, "w", encoding="utf-8") as f:
+            json.dump(payload, f, ensure_ascii=False, indent=2)
+        print(f"已写入: {args.json_out}")
+    root = payload.get("dom", {}).get("root")
     elements = flatten_elements(root) if root else []
 
     if not args.skip_validation:
@@ -266,15 +326,15 @@ def main() -> None:
                 print(f"验证失败: {e}", file=sys.stderr)
             sys.exit(3)
 
-    print("window:", data.get("window", {}).get("title"))
-    print("element_count:", data.get("quality", {}).get("element_count"))
-    print("score:", data.get("quality", {}).get("score"))
-    print("truncated:", data.get("stats", {}).get("truncated"))
-    if data.get("stats", {}).get("truncated_reason"):
-        print("truncated_reason:", data.get("stats", {}).get("truncated_reason"))
+    print("window:", payload.get("window", {}).get("title"))
+    print("element_count:", payload.get("quality", {}).get("element_count"))
+    print("score:", payload.get("quality", {}).get("score"))
+    print("truncated:", payload.get("stats", {}).get("truncated"))
+    if payload.get("stats", {}).get("truncated_reason"):
+        print("truncated_reason:", payload.get("stats", {}).get("truncated_reason"))
     print("validation:", "skipped" if args.skip_validation else "OK")
 
-    sem = data.get("semantic")
+    sem = payload.get("semantic")
     if sem:
         st = sem.get("stats") or {}
         print("\n--- Semantic DOM ---")

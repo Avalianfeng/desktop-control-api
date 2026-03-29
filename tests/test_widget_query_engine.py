@@ -2,15 +2,22 @@ from __future__ import annotations
 
 from models.ui_dom import UIBounds
 from query.widget_query_engine import WidgetQueryFilters, WidgetQueryRegion, query_widgets
-from semantic.widget_types import Widget
+from semantic.widget_types import Widget, WidgetText
 
 
 def _w(**kwargs) -> Widget:
+    legacy = kwargs.pop("text", "Save")
+    if isinstance(legacy, WidgetText):
+        wt, legacy_str = legacy, legacy.value or ""
+    else:
+        wt = WidgetText.from_uia_merged(str(legacy or ""))
+        legacy_str = str(legacy or "")
     base = dict(
         id="w_0",
         type="button",
         role="button",
-        text="Save",
+        text=wt,
+        text_legacy=legacy_str,
         normalized="save",
         bounds=UIBounds(x=10, y=10, width=20, height=20),
         enabled=True,
@@ -53,7 +60,7 @@ def test_text_contains_case_insensitive() -> None:
         select=["id", "text"],
     )
     assert stats["matched"] == 1
-    assert out[0]["text"] == "Save As"
+    assert out[0]["text"] == {"value": "Save As", "source": "uia", "confidence": 1.0}
 
 
 def test_region_preset_bottom_half() -> None:

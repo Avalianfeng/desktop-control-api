@@ -15,7 +15,7 @@ def test_live_ui_widgets_read(integration_base_url: str, integration_headers, in
     )
     assert resp.status_code in (200, 206)
     data = resp.json()
-    assert data["schema_version"] == "desktop_widgets.v1.2"
+    assert data["schema_version"] == "desktop_widgets.v2"
     assert "window" in data and "stats" in data and "widgets" in data
     assert "all_elements" in data["stats"]
     assert "widgets" in data["stats"]

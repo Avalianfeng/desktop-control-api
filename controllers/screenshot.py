@@ -19,10 +19,14 @@ from errors import ApiError
 
 if os.name == "nt":
     from controllers.win32_win import force_foreground
-    from controllers.win32_window_capture import capture_window_printwindow
+    from controllers.win32_window_capture import (
+        capture_client_region_via_printwindow,
+        capture_window_printwindow,
+    )
 else:
     force_foreground = None  # type: ignore[misc, assignment]
     capture_window_printwindow = None  # type: ignore[misc, assignment]
+    capture_client_region_via_printwindow = None  # type: ignore[misc, assignment]
 
 
 def _public_path(local_path: str) -> str:
@@ -65,10 +69,10 @@ class ScreenshotController:
         try:
             if region:
                 monitor = {
-                    "left": region[0],
-                    "top": region[1],
-                    "width": region[2],
-                    "height": region[3],
+                    "left": int(region[0]),
+                    "top": int(region[1]),
+                    "width": int(region[2]),
+                    "height": int(region[3]),
                 }
             else:
                 # mss 约定：monitors[0] 是虚拟屏总区域；monitors[1] 通常为主屏
@@ -91,8 +95,9 @@ class ScreenshotController:
                     last_exc = e2
                     raise
             
-            # 转换为 PIL Image
-            img = Image.frombytes("RGB", screenshot.size, screenshot.bgra, "raw", "BGRX")
+            # 转换为 PIL Image（mss 尺寸须为原生 int，避免扩展类型触发 Pillow/ctypes 溢出）
+            sw, sh = int(screenshot.width), int(screenshot.height)
+            img = Image.frombytes("RGB", (sw, sh), screenshot.bgra, "raw", "BGRX")
             
             # 转换为 Base64
             buffer = BytesIO()
@@ -150,6 +155,41 @@ class ScreenshotController:
             "height": int(image_data["height"]),
         }
 
+    def _finalize_region_image(
+        self,
+        img: Image.Image,
+        scale: float,
+        capture_method: str,
+        *,
+        include_image: bool = False,
+    ) -> Dict[str, Any]:
+        if img.width <= 0 or img.height <= 0:
+            raise ValueError("width 和 height 必须大于 0")
+        img = self._resize_if_needed(img, scale)
+        resolved = self._default_screenshot_dir()
+        os.makedirs(resolved, exist_ok=True)
+        buffer = BytesIO()
+        img.save(buffer, format="PNG")
+        raw = buffer.getvalue()
+        sha256_8 = hashlib.sha256(raw).hexdigest()[:8]
+        ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
+        filename = f"screenshot_{ts}_{sha256_8}.png"
+        file_path = Path(resolved) / filename
+        with open(file_path, "wb") as f:
+            f.write(raw)
+        out: Dict[str, Any] = {
+            "format": "png",
+            "path": _public_path(str(file_path)),
+            "bytes": len(raw),
+            "sha256_8": sha256_8,
+            "width": img.width,
+            "height": img.height,
+            "capture_method": capture_method,
+        }
+        if include_image:
+            out["image"] = base64.b64encode(raw).decode("utf-8")
+        return out
+
     def capture_region(
         self,
         x: int,
@@ -169,33 +209,42 @@ class ScreenshotController:
 
         image_data = self.capture(region=[x, y, width, height])
         img = self._decode_base64_to_image(image_data["base64"])
-        img = self._resize_if_needed(img, scale)
+        return self._finalize_region_image(img, scale, "screen_region", include_image=include_image)
 
-        resolved = self._default_screenshot_dir()
-        os.makedirs(resolved, exist_ok=True)
-
-        buffer = BytesIO()
-        img.save(buffer, format="PNG")
-        raw = buffer.getvalue()
-        sha256_8 = hashlib.sha256(raw).hexdigest()[:8]
-        ts = time.strftime("%Y%m%d_%H%M%S", time.gmtime())
-        filename = f"screenshot_{ts}_{sha256_8}.png"
-        file_path = Path(resolved) / filename
-        with open(file_path, "wb") as f:
-            f.write(raw)
-
-        out: Dict[str, Any] = {
-            "format": "png",
-            "path": _public_path(str(file_path)),
-            "bytes": len(raw),
-            "sha256_8": sha256_8,
-            "width": img.width,
-            "height": img.height,
-            "capture_method": "screen_region",
-        }
-        if include_image:
-            out["image"] = base64.b64encode(raw).decode("utf-8")
-        return out
+    def capture_region_via_window_printwindow(
+        self,
+        hwnd: int,
+        x: int,
+        y: int,
+        width: int,
+        height: int,
+        scale: float = 1.0,
+        *,
+        include_image: bool = False,
+    ) -> Dict[str, Any]:
+        """
+        Windows：PrintWindow 客户区位图内按屏幕坐标裁剪，一般不受其它窗口遮挡。
+        """
+        if width <= 0 or height <= 0:
+            raise ValueError("width 和 height 必须大于 0")
+        if os.name != "nt" or capture_client_region_via_printwindow is None:
+            raise ApiError(
+                status_code=501,
+                code="print_window_unsupported",
+                message="PrintWindow 控件裁剪仅支持 Windows",
+                details={"hwnd": hwnd},
+            )
+        if not hwnd:
+            raise ApiError(
+                status_code=400,
+                code="print_window_failed",
+                message="无效 hwnd",
+                details={"hwnd": hwnd},
+            )
+        pil = capture_client_region_via_printwindow(hwnd, x, y, width, height)
+        return self._finalize_region_image(
+            pil, scale, "printwindow_client_crop", include_image=include_image
+        )
 
     def capture_window(
         self,
@@ -313,12 +362,13 @@ class ScreenshotController:
     def _get_client_rect(self, hwnd: int) -> Dict[str, int]:
         import ctypes
 
+        hwnd_h = ctypes.wintypes.HWND(int(hwnd))
         rect = ctypes.wintypes.RECT()
-        if not ctypes.windll.user32.GetClientRect(hwnd, ctypes.byref(rect)):
+        if not ctypes.windll.user32.GetClientRect(hwnd_h, ctypes.byref(rect)):
             raise RuntimeError("GetClientRect 调用失败")
 
         point = ctypes.wintypes.POINT(rect.left, rect.top)
-        if not ctypes.windll.user32.ClientToScreen(hwnd, ctypes.byref(point)):
+        if not ctypes.windll.user32.ClientToScreen(hwnd_h, ctypes.byref(point)):
             raise RuntimeError("ClientToScreen 调用失败")
 
         return {

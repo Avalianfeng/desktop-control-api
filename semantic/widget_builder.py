@@ -9,7 +9,7 @@ from dom.filter import is_visible
 from semantic.label_resolver import deepest_text, extract_label, normalize_icon
 from semantic.label_normalizer import normalize_label
 from semantic.role_infer import infer_role
-from semantic.widget_types import Widget
+from semantic.widget_types import Widget, WidgetText
 
 
 def collapse_tree(root: UIElement, *, collapse_icons: bool = True) -> UIElement:
@@ -151,12 +151,14 @@ def build_widgets(
                     runtime_id=getattr(node, "uia_runtime_id", None),
                     uia_path=node.id,
                 )
+                wt = WidgetText.from_uia_merged(text)
                 widget_payloads.append(
                     {
                         "id": wid,
                         "type": node.type,
                         "role": role,
-                        "text": text,
+                        "text": wt,
+                        "text_legacy": text,
                         "normalized": normalized,
                         "bounds": node.bounds,
                         "enabled": bool(node.enabled),
@@ -189,12 +191,14 @@ def build_widgets(
                         runtime_id=getattr(node, "uia_runtime_id", None),
                         uia_path=node.id,
                     )
+                    wt = WidgetText.from_uia_merged(text)
                     widget_payloads.append(
                         {
                             "id": wid,
                             "type": node.type,
                             "role": role,
-                            "text": text,
+                            "text": wt,
+                            "text_legacy": text,
                             "normalized": normalized,
                             "bounds": node.bounds,
                             "enabled": bool(node.enabled),
@@ -248,7 +252,7 @@ def build_widgets(
         meta = p.get("meta") or {}
         fp = {
             "role": p.get("role"),
-            "text": p.get("text"),
+            "text": p.get("text_legacy", ""),
             "normalized": p.get("normalized"),
             "automation_id": p.get("automation_id"),
             "ancestor_roles": _ancestor_roles(str(p.get("id") or "")),

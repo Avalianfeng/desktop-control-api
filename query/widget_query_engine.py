@@ -94,7 +94,8 @@ def match(
     if filters.text_contains is not None:
         needle = filters.text_contains.strip().lower()
         if needle:
-            if needle not in (widget.text or "").lower():
+            hay = (widget.text_legacy or (widget.text.value or "") or "").lower()
+            if needle not in hay:
                 return False
 
     if filters.ancestor_role is not None:
@@ -160,7 +161,9 @@ def query_widgets(
         if "role" in allowed:
             out["role"] = w.role
         if "text" in allowed:
-            out["text"] = w.text
+            out["text"] = w.text.model_dump()
+        if "text_legacy" in allowed:
+            out["text_legacy"] = w.text_legacy
         if "normalized" in allowed:
             out["normalized"] = w.normalized
         if "bounds" in allowed:

@@ -10,22 +10,23 @@ import os
 import secrets
 import time
 from datetime import datetime, timezone
-from typing import Any, Callable, Dict, List, Optional, Literal
+from typing import Any, Callable, Dict, List, Literal, Optional
 
 from fastapi import FastAPI, HTTPException, Query, Response, Security
 from fastapi.requests import Request
 from fastapi.security import APIKeyHeader
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, Field, field_validator, model_validator
 import uvicorn
 
+from controllers.ocr_routes import build_vision_router, build_visual_router
 from deps import Deps, create_default_deps
 from errors import ApiError
 from models.ui_dom import UIReadOptions
 from semantic.widget_builder import build_widgets
 from semantic.widget_types import ACTIONABLE_WIDGET_ROLES, WidgetResponse, WidgetStats
 from traceability.action_traces import append_trace_event, new_trace_id
-from settings import Settings, DEFAULT_API_KEY
+from settings import DEFAULT_API_KEY, Settings, default_ui_max_depth
 from query.api_mapping import to_engine_filters
 from observability.context import set_request_id
 from observability.logging import configure_logging, log_extra
@@ -92,7 +93,7 @@ def create_app(*, settings: Settings, deps: Deps) -> FastAPI:
     app = FastAPI(
         title="Desktop Control API",
         description="为 AI 代理提供的统一桌面自动化 API 服务",
-        version="1.0.0",
+        version="2.0.0",
         docs_url="/docs",
         redoc_url="/redoc",
     )
@@ -241,6 +242,10 @@ async def verify_api_key(api_key: str | None = Security(api_key_header)):
     if not any(secrets.compare_digest(api_key, valid_key) for valid_key in VALID_API_KEYS):
         raise ApiError(status_code=403, code="auth_invalid_api_key", message="API Key 无效")
     return api_key
+
+
+app.include_router(build_visual_router(deps))
+app.include_router(build_vision_router(deps))
 
 
 def ensure_region(region: Optional[List[int]], name: str = "region") -> Optional[List[int]]:
@@ -423,6 +428,13 @@ class WindowFocusRequest(BaseModel):
         ge=0,
         description="标题子串匹配到多个窗口时的下标（0 起）；仅与 title 一起使用",
     )
+    best_effort: bool = Field(
+        default=False,
+        description=(
+            "为 True 时：系统拒绝置前仍返回 HTTP 200，data.focused=false，不抛 409。"
+            "适用于仅需 hwnd 做 UIA 查询 / PrintWindow 截图等、不强依赖前台的场景。"
+        ),
+    )
 
 class WindowMoveRequest(BaseModel):
     title: str = Field(..., description="窗口标题")
@@ -477,7 +489,9 @@ class ScreenshotRegionRequest(BaseModel):
 class UIDOMReadRequest(BaseModel):
     window_title: Optional[str] = Field(default=None, description="窗口标题（可选，不传则读取当前活动窗口）")
     window_hwnd: Optional[int] = Field(default=None, ge=1, description="窗口 hwnd（可选，优先）")
-    max_depth: int = Field(default=8, ge=1, le=30, description="UI 树最大深度")
+    max_depth: int = Field(
+        default_factory=default_ui_max_depth, ge=1, le=30, description="UI 树最大深度（默认见 .env DESKTOP_UI_MAX_DEPTH）"
+    )
     include_offscreen: bool = Field(default=False, description="是否包含屏幕外元素")
     include_disabled: bool = Field(default=True, description="是否包含不可用元素")
     include_invisible: bool = Field(default=False, description="是否包含不可见元素")
@@ -490,7 +504,9 @@ class UIDOMReadRequest(BaseModel):
 class UIWidgetsReadRequest(BaseModel):
     window_title: Optional[str] = Field(default=None, description="窗口标题（可选，不传则读取当前活动窗口）")
     window_hwnd: Optional[int] = Field(default=None, ge=1, description="窗口 hwnd（可选，优先）")
-    max_depth: int = Field(default=8, ge=1, le=30, description="UI 树最大深度")
+    max_depth: int = Field(
+        default_factory=default_ui_max_depth, ge=1, le=30, description="UI 树最大深度（默认见 .env DESKTOP_UI_MAX_DEPTH）"
+    )
     include_offscreen: bool = Field(default=False, description="是否包含屏幕外元素")
     include_disabled: bool = Field(default=True, description="是否包含不可用元素")
     include_invisible: bool = Field(default=False, description="是否包含不可见元素")
@@ -520,7 +536,9 @@ class WidgetQueryFilters(BaseModel):
 class UIWidgetsQueryRequest(BaseModel):
     window_title: Optional[str] = Field(default=None, description="窗口标题（可选，不传则读取当前活动窗口）")
     window_hwnd: Optional[int] = Field(default=None, ge=1, description="窗口 hwnd（可选，优先）")
-    max_depth: int = Field(default=8, ge=1, le=30, description="UI 树最大深度")
+    max_depth: int = Field(
+        default_factory=default_ui_max_depth, ge=1, le=30, description="UI 树最大深度（默认见 .env DESKTOP_UI_MAX_DEPTH）"
+    )
     include_offscreen: bool = Field(default=False, description="是否包含屏幕外元素")
     include_disabled: bool = Field(default=True, description="是否包含不可用元素")
     include_invisible: bool = Field(default=False, description="是否包含不可见元素")
@@ -537,7 +555,9 @@ class UIWidgetsQueryRequest(BaseModel):
 class UIWidgetClickRequest(BaseModel):
     id: str = Field(..., min_length=1, max_length=200, description="widget id（稳定 locator）")
     window_title: Optional[str] = Field(default=None, description="窗口标题（可选，不传则使用当前活动窗口）")
-    max_depth: int = Field(default=8, ge=1, le=30, description="UI 树最大深度")
+    max_depth: int = Field(
+        default_factory=default_ui_max_depth, ge=1, le=30, description="UI 树最大深度（默认见 .env DESKTOP_UI_MAX_DEPTH）"
+    )
     fingerprint: Optional[Dict[str, object]] = Field(default=None, description="可选 fingerprint（用于找不到 id 时重定位）")
     target_hwnd: Optional[int] = Field(default=None, ge=1, description="目标窗口 hwnd（可选；提供则先确保焦点在该窗口）")
 
@@ -547,9 +567,30 @@ class UIWidgetSetValueRequest(BaseModel):
     value: str = Field(..., description="要设置的文本值")
     verify: bool = Field(default=False, description="是否回读验证 value 是否生效（默认 false）")
     window_title: Optional[str] = Field(default=None, description="窗口标题（可选，不传则使用当前活动窗口）")
-    max_depth: int = Field(default=8, ge=1, le=30, description="UI 树最大深度")
+    max_depth: int = Field(
+        default_factory=default_ui_max_depth, ge=1, le=30, description="UI 树最大深度（默认见 .env DESKTOP_UI_MAX_DEPTH）"
+    )
     fingerprint: Optional[Dict[str, object]] = Field(default=None, description="可选 fingerprint（用于找不到 id 时重定位）")
     target_hwnd: Optional[int] = Field(default=None, ge=1, description="目标窗口 hwnd（可选；提供则先确保焦点在该窗口）")
+
+
+class WidgetActRequest(BaseModel):
+    """POST /widgets/act 白名单：click | set_value（与 AI_PROTOCOL 对齐）。"""
+
+    action: Literal["click", "set_value"]
+    id: str = Field(..., min_length=1, max_length=200, description="widget id")
+    window_title: Optional[str] = Field(default=None, description="窗口标题（可选）")
+    max_depth: int = Field(default_factory=default_ui_max_depth, ge=1, le=30)
+    fingerprint: Optional[Dict[str, object]] = Field(default=None)
+    target_hwnd: Optional[int] = Field(default=None, ge=1)
+    value: Optional[str] = Field(default=None, description="仅 action=set_value")
+    verify: bool = Field(default=False, description="仅 set_value")
+
+    @model_validator(mode="after")
+    def _require_value_for_set(self) -> "WidgetActRequest":
+        if self.action == "set_value" and self.value is None:
+            raise ValueError("action=set_value 时必须提供 value")
+        return self
 
 # ============== API 路由 ==============
 
@@ -893,8 +934,22 @@ async def window_focus(request: WindowFocusRequest):
             lock=action_lock,
         )
         if err is None and result:
-            return ok(data={"action": "focus", "window": result}, trace_id=None)
+            return ok(
+                data={"action": "focus", "focused": True, "window": result},
+                trace_id=None,
+            )
         if err == "focus_failed":
+            if request.best_effort:
+                return ok(
+                    data={
+                        "action": "focus",
+                        "focused": False,
+                        "reason": "focus_failed",
+                        "window": None,
+                        "hwnd": int(request.hwnd),
+                    },
+                    trace_id=None,
+                )
             raise ApiError(
                 status_code=409,
                 code="window_focus_failed",
@@ -915,8 +970,23 @@ async def window_focus(request: WindowFocusRequest):
         lock=action_lock,
     )
     if err is None and result:
-        return ok(data={"action": "focus", "window": result}, trace_id=None)
+        return ok(
+            data={"action": "focus", "focused": True, "window": result},
+            trace_id=None,
+        )
     if err == "focus_failed":
+        if request.best_effort:
+            return ok(
+                data={
+                    "action": "focus",
+                    "focused": False,
+                    "reason": "focus_failed",
+                    "window": None,
+                    "title": title,
+                    "title_match_index": idx,
+                },
+                trace_id=None,
+            )
         raise ApiError(
             status_code=409,
             code="window_focus_failed",
@@ -950,42 +1020,43 @@ async def window_move(request: WindowMoveRequest):
         return ok(data={"action": "move", "window": result}, trace_id=None)
     raise HTTPException(status_code=404, detail=f"未找到窗口：{request.title}")
 
-@app.post("/locate/image", dependencies=[Security(verify_api_key)])
-async def locate_image(request: LocateImageRequest):
-    """图像定位（在屏幕上找图）"""
-    validated_region = ensure_region(request.screen_region, name="screen_region")
-    if not os.path.exists(request.image_path):
-        raise HTTPException(status_code=404, detail=f"图像文件不存在：{request.image_path}")
+if bool(getattr(settings, "expose_debug_routes", False)):
+    @app.post("/locate/image", dependencies=[Security(verify_api_key)])
+    async def locate_image(request: LocateImageRequest):
+        """图像定位（在屏幕上找图）。调试/诊断用途：默认不暴露。"""
+        validated_region = ensure_region(request.screen_region, name="screen_region")
+        if not os.path.exists(request.image_path):
+            raise HTTPException(status_code=404, detail=f"图像文件不存在：{request.image_path}")
 
-    result = await api_action(
-        endpoint="/locate/image",
-        action=lambda: locator_ctrl.locate_image(
-            request.image_path,
-            confidence=request.confidence,
-            region=validated_region,
-        ),
-        payload={"image_path": request.image_path, "confidence": request.confidence, "screen_region": validated_region},
-        error_prefix="图像定位失败",
-        lock=None,  # 只读
-    )
-    if result:
-        return ok(data={"found": True, "location": result}, trace_id=None)
-    return ok(data={"found": False, "message": "未找到匹配图像"}, trace_id=None)
+        result = await api_action(
+            endpoint="/locate/image",
+            action=lambda: locator_ctrl.locate_image(
+                request.image_path,
+                confidence=request.confidence,
+                region=validated_region,
+            ),
+            payload={"image_path": request.image_path, "confidence": request.confidence, "screen_region": validated_region},
+            error_prefix="图像定位失败",
+            lock=None,  # 只读
+        )
+        if result:
+            return ok(data={"found": True, "location": result}, trace_id=None)
+        return ok(data={"found": False, "message": "未找到匹配图像"}, trace_id=None)
 
-@app.post("/locate/text", dependencies=[Security(verify_api_key)])
-async def locate_text(request: LocateTextRequest):
-    """文字定位（OCR 查找文字）"""
-    validated_region = ensure_region(request.screen_region, name="screen_region")
-    result = await api_action(
-        endpoint="/locate/text",
-        action=lambda: locator_ctrl.locate_text(request.text, region=validated_region),
-        payload={"text": request.text, "screen_region": validated_region},
-        error_prefix="文字定位失败",
-        lock=None,  # 只读
-    )
-    if result:
-        return ok(data={"found": True, "location": result}, trace_id=None)
-    return ok(data={"found": False, "message": f"未找到文字：{request.text}"}, trace_id=None)
+    @app.post("/locate/text", dependencies=[Security(verify_api_key)])
+    async def locate_text(request: LocateTextRequest):
+        """文字定位（OCR 查找文字）。调试/诊断用途：默认不暴露。"""
+        validated_region = ensure_region(request.screen_region, name="screen_region")
+        result = await api_action(
+            endpoint="/locate/text",
+            action=lambda: locator_ctrl.locate_text(request.text, region=validated_region),
+            payload={"text": request.text, "screen_region": validated_region},
+            error_prefix="文字定位失败",
+            lock=None,  # 只读
+        )
+        if result:
+            return ok(data={"found": True, "location": result}, trace_id=None)
+        return ok(data={"found": False, "message": f"未找到文字：{request.text}"}, trace_id=None)
 
 
 @app.post("/screenshot/window", dependencies=[Security(verify_api_key)])
@@ -1101,7 +1172,7 @@ async def read_ui_dom(
     return ok(data=result.payload.model_dump(), trace_id=None)
 
 
-@app.post("/ui/widgets/read", dependencies=[Security(verify_api_key)])
+@app.post("/ui/widgets/read", dependencies=[Security(verify_api_key)], include_in_schema=False)
 async def read_ui_widgets(
     request: UIWidgetsReadRequest,
     response: Response,
@@ -1151,7 +1222,7 @@ async def read_ui_widgets(
     return ok(data=WidgetResponse(window=result.payload.window, stats=stats, widgets=widgets).model_dump(), trace_id=None)
 
 
-@app.post("/ui/widgets/query", dependencies=[Security(verify_api_key)])
+@app.post("/ui/widgets/query", dependencies=[Security(verify_api_key)], include_in_schema=False)
 async def query_ui_widgets(
     request: UIWidgetsQueryRequest,
     response: Response,
@@ -1195,7 +1266,7 @@ async def query_ui_widgets(
         response.status_code = 206
     return ok(
         data={
-            "schema_version": "desktop_widgets_query.v1",
+            "schema_version": "desktop_widgets_query.v2",
             "window": result.window,
             "stats": result.stats,
             "widgets": result.widgets,
@@ -1204,7 +1275,7 @@ async def query_ui_widgets(
     )
 
 
-@app.post("/ui/widgets/click", dependencies=[Security(verify_api_key)])
+@app.post("/ui/widgets/click", dependencies=[Security(verify_api_key)], include_in_schema=False)
 async def click_ui_widget(request: UIWidgetClickRequest, http_request: Request):
     """按 widget id 执行 click（优先 UIA Invoke，必要时退化鼠标点击）。"""
     mode = (http_request.headers.get("X-Desktop-Control-Mode") or "safe").strip().lower()
@@ -1221,6 +1292,7 @@ async def click_ui_widget(request: UIWidgetClickRequest, http_request: Request):
         # 只做重定位与返回模拟计划，不执行真实动作
         widget, window, resolved_ok, resolved_by, candidates = widget_action_ctrl._resolve_widget(  # type: ignore[attr-defined]
             window_title=request.window_title,
+            window_hwnd=int(request.target_hwnd) if request.target_hwnd is not None else None,
             options=options,
             widget_id=request.id,
             fingerprint=request.fingerprint,  # type: ignore[arg-type]
@@ -1355,7 +1427,7 @@ async def click_ui_widget(request: UIWidgetClickRequest, http_request: Request):
         raise
 
 
-@app.post("/ui/widgets/set_value", dependencies=[Security(verify_api_key)])
+@app.post("/ui/widgets/set_value", dependencies=[Security(verify_api_key)], include_in_schema=False)
 async def set_value_ui_widget(request: UIWidgetSetValueRequest, http_request: Request):
     """按 widget id 设置输入值（优先 UIA ValuePattern，必要时退化键盘输入）。"""
     mode = (http_request.headers.get("X-Desktop-Control-Mode") or "safe").strip().lower()
@@ -1371,6 +1443,7 @@ async def set_value_ui_widget(request: UIWidgetSetValueRequest, http_request: Re
     if mode == "safe":
         widget, window, resolved_ok, resolved_by, candidates = widget_action_ctrl._resolve_widget(  # type: ignore[attr-defined]
             window_title=request.window_title,
+            window_hwnd=int(request.target_hwnd) if request.target_hwnd is not None else None,
             options=options,
             widget_id=request.id,
             fingerprint=request.fingerprint,  # type: ignore[arg-type]
@@ -1509,6 +1582,47 @@ async def set_value_ui_widget(request: UIWidgetSetValueRequest, http_request: Re
             }
         )
         raise
+
+
+@app.post("/widgets/read", dependencies=[Security(verify_api_key)])
+async def widgets_read_alias(request: UIWidgetsReadRequest, response: Response):
+    """与 POST /ui/widgets/read 等价（v2 正式路径）。"""
+    return await read_ui_widgets(request, response)
+
+
+@app.post("/widgets/query", dependencies=[Security(verify_api_key)])
+async def widgets_query_alias(request: UIWidgetsQueryRequest, response: Response):
+    """与 POST /ui/widgets/query 等价（v2 正式路径）。"""
+    return await query_ui_widgets(request, response)
+
+
+@app.post("/widgets/act", dependencies=[Security(verify_api_key)])
+async def widgets_act(body: WidgetActRequest, http_request: Request):
+    """统一控件操作入口（click / set_value）。"""
+    if body.action == "click":
+        return await click_ui_widget(
+            UIWidgetClickRequest(
+                id=body.id,
+                window_title=body.window_title,
+                max_depth=body.max_depth,
+                fingerprint=body.fingerprint,
+                target_hwnd=body.target_hwnd,
+            ),
+            http_request,
+        )
+    return await set_value_ui_widget(
+        UIWidgetSetValueRequest(
+            id=body.id,
+            value=body.value or "",
+            verify=body.verify,
+            window_title=body.window_title,
+            max_depth=body.max_depth,
+            fingerprint=body.fingerprint,
+            target_hwnd=body.target_hwnd,
+        ),
+        http_request,
+    )
+
 
 # ============== 主程序 ==============
 

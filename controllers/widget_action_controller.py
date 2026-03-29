@@ -6,6 +6,7 @@ from typing import Optional
 from errors import ApiError
 from models.ui_dom import UIReadOptions
 from semantic.widget_builder import build_widgets
+from semantic.widget_types import Widget
 from controllers.ui_read_controller import UIReadController
 
 
@@ -40,7 +41,7 @@ class WidgetActionController:
             score += 20
         if want_norm and (w.normalized or "").strip() == want_norm:
             score += 15
-        if want_text and (w.text or "").strip() == want_text:
+        if want_text and ((w.text_legacy or (w.text.value or "") or "").strip() == want_text):
             score += 10
         if want_anc:
             got = ((w.meta or {}).get("fingerprint") or {}).get("ancestor_roles") or []
@@ -57,6 +58,7 @@ class WidgetActionController:
         self,
         *,
         window_title: Optional[str],
+        window_hwnd: Optional[int] = None,
         options: UIReadOptions,
         widget_id: str,
         fingerprint: Optional[dict],
@@ -65,7 +67,7 @@ class WidgetActionController:
     ):
         result = self.ui_read_ctrl.read_dom(
             window_title=window_title,
-            window_hwnd=None,
+            window_hwnd=window_hwnd,
             options=options.model_copy(update={"include_semantic": False}),
         )
         widgets = build_widgets(
@@ -93,7 +95,7 @@ class WidgetActionController:
                 {
                     "id": w.id,
                     "role": w.role,
-                    "text": w.text,
+                    "text": w.text_legacy,
                     "normalized": w.normalized,
                     "automation_id": w.automation_id,
                     "score": s,
@@ -109,7 +111,7 @@ class WidgetActionController:
                 {
                     "id": w.id,
                     "role": w.role,
-                    "text": w.text,
+                    "text": w.text_legacy,
                     "normalized": w.normalized,
                     "automation_id": w.automation_id,
                     "score": s,
@@ -119,6 +121,38 @@ class WidgetActionController:
             return None, result.payload.window, False, "fingerprint_ambiguous", cands
 
         return scored[0][1], result.payload.window, True, "fingerprint", None
+
+    def resolve_widget(
+        self,
+        *,
+        window_title: Optional[str],
+        window_hwnd: Optional[int] = None,
+        options: UIReadOptions,
+        widget_id: str,
+        fingerprint: Optional[dict] = None,
+        include_text_widgets: bool = True,
+        collapse_icons: bool = True,
+    ) -> tuple[Widget, dict, bool, Optional[str], Optional[list]]:
+        """
+        公开解析入口：按 id（及可选 fingerprint）定位 Widget；失败时抛出 ApiError(404)。
+        """
+        widget, window, resolved_ok, resolved_by, candidates = self._resolve_widget(
+            window_title=window_title,
+            window_hwnd=window_hwnd,
+            options=options,
+            widget_id=widget_id,
+            fingerprint=fingerprint,
+            include_text_widgets=include_text_widgets,
+            collapse_icons=collapse_icons,
+        )
+        if widget is None:
+            raise ApiError(
+                status_code=404,
+                code="widget_not_found",
+                message=f"未找到 widget：{widget_id}",
+                details={"resolved_by": resolved_by, "candidates": candidates},
+            )
+        return widget, window, resolved_ok, resolved_by, candidates
 
     def _find_widget_by_id(
         self,
